@@ -1,24 +1,23 @@
-use crate::commands::AsFrame;
 use crate::events::Event;
-use crate::OgaError;
+use crate::{FramePlusChan, OgaError};
 use futures::future::{AbortHandle, AbortRegistration, Abortable};
 use tokio::sync::{broadcast, mpsc};
 
 #[derive(Debug)]
 pub(crate) struct DispatcherTask {
     abort: AbortRegistration,
-    chan_from_app: mpsc::Receiver<Box<dyn AsFrame>>,
+    chan_from_app: mpsc::Receiver<FramePlusChan>,
     chan_from_manager: mpsc::Receiver<Event>,
     chan_to_app: broadcast::Sender<Event>,
-    chan_to_manager: mpsc::Sender<Box<dyn AsFrame>>,
+    chan_to_manager: mpsc::Sender<FramePlusChan>,
 }
 
 impl DispatcherTask {
     pub(crate) fn new(
-        chan_from_app: mpsc::Receiver<Box<dyn AsFrame>>,
+        chan_from_app: mpsc::Receiver<FramePlusChan>,
         chan_from_manager: mpsc::Receiver<Event>,
         chan_to_app: broadcast::Sender<Event>,
-        chan_to_manager: mpsc::Sender<Box<dyn AsFrame>>,
+        chan_to_manager: mpsc::Sender<FramePlusChan>,
     ) -> (Self, AbortHandle) {
         let (handle, reg) = AbortHandle::new_pair();
         let task = Self {
@@ -50,10 +49,10 @@ impl DispatcherTask {
 
     /// Run the core processing logic for this task.
     pub(crate) async fn process(
-        mut from_app: mpsc::Receiver<Box<dyn AsFrame>>,
+        mut from_app: mpsc::Receiver<FramePlusChan>,
         mut from_manager: mpsc::Receiver<Event>,
         to_app: broadcast::Sender<Event>,
-        mut to_manager: mpsc::Sender<Box<dyn AsFrame>>,
+        mut to_manager: mpsc::Sender<FramePlusChan>,
     ) -> Result<(), OgaError> {
         loop {
             tokio::select! {

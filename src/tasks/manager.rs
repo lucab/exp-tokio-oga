@@ -1,6 +1,5 @@
-use crate::commands::AsFrame;
 use crate::events::Event;
-use crate::OgaError;
+use crate::{FramePlusChan, OgaError};
 use futures::future::{AbortHandle, AbortRegistration, Abortable};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
@@ -10,14 +9,14 @@ use tokio::sync::mpsc;
 pub(crate) struct ManagerTask {
     abort: AbortRegistration,
     sock: UnixStream,
-    chan_incoming: mpsc::Receiver<Box<dyn AsFrame>>,
+    chan_incoming: mpsc::Receiver<FramePlusChan>,
     chan_outgoing: mpsc::Sender<Event>,
 }
 
 impl ManagerTask {
     pub(crate) fn new(
         sock: UnixStream,
-        chan_incoming: mpsc::Receiver<Box<dyn AsFrame>>,
+        chan_incoming: mpsc::Receiver<FramePlusChan>,
         chan_outgoing: mpsc::Sender<Event>,
     ) -> (Self, AbortHandle) {
         let (handle, reg) = futures::future::AbortHandle::new_pair();
@@ -45,7 +44,7 @@ impl ManagerTask {
     /// Run the core processing logic for this task.
     pub(crate) async fn process(
         mut sock: UnixStream,
-        mut incoming_cmd: mpsc::Receiver<Box<dyn AsFrame>>,
+        mut incoming_cmd: mpsc::Receiver<FramePlusChan>,
         mut outgoing_event: mpsc::Sender<Event>,
     ) -> Result<(), OgaError> {
         let (mut sock_rd, mut sock_wr) = {
@@ -61,11 +60,10 @@ impl ManagerTask {
                     let line = msg
                         .map_err(|e| OgaError::from(e.to_string()))?
                         .ok_or_else(|| OgaError::from("manager: end of unix socket stream"))?;
-                    let event: Event = match serde_json::from_str(&line) {
+                    let event = match Event::parse_frame(line.as_bytes()) {
                         Ok(val) => { val },
                         Err(_) => {
-                            // XXX(lucab): log::warn here.
-                            eprintln!("failed to decode event: '{}'", &line);
+                            log::warn!("failed to decode event: '{}'", &line);
                             continue
                         },
                     };
@@ -74,11 +72,12 @@ impl ManagerTask {
                 },
                 msg = incoming_cmd.recv() => {
                     log::trace!("manager: incoming cmd");
-                    let cmd = msg
+                    let (cmd, chan) = msg
                         .ok_or_else(|| OgaError::from("manager: end of incoming stream"))?;
                     let data = cmd.as_frame()?;
                     sock_wr.write(&data).await
                         .map_err(|e| OgaError::from(e.to_string()))?;
+                    let _ = chan.send(Ok(()));
                 }
             }
         }

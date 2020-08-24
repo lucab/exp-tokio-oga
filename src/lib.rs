@@ -10,8 +10,6 @@ It supports receiving [events](./events/index.html) from the host and sending
 
 The entrypoint for client initialization is [OgaClient::builder()](struct.OgaClient.html#method.builder).
 
-An end-to-end usage example is available under [`examples`](./examples).
-
 References:
  * <https://resources.ovirt.org/old-site-files/wiki/Ovirt-guest-agent.pdf>
  * <https://github.com/oVirt/vdsm/blob/v4.40.25/lib/vdsm/virt/guestagent.py>
@@ -42,7 +40,10 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::UnixStream;
 use tokio::sync::{broadcast, mpsc, oneshot};
 
-/// Default path to the Unix Domanin Socket (without udev symlinking).
+/// Tuple with pending frame and channel for the result.
+type FramePlusChan = (Box<dyn AsFrame>, oneshot::Sender<Result<(), OgaError>>);
+
+/// Default path to the Unix Domain Socket (without udev symlinking).
 pub static DEFAULT_BARE_VIRTIO_PATH: &str = "/dev/virtio-ports/ovirt-guest-agent.0";
 
 /// Default path to the Unix Domain Socket (with udev symlinking).
@@ -51,13 +52,17 @@ pub static DEFAULT_UDEV_VIRTIO_PATH: &str = "/dev/virtio-ports/com.redhat.rhevm.
 /// Configuration and builder for `OgaClient`.
 #[derive(Clone, Debug)]
 pub struct OgaBuilder {
-    virtio: PathBuf,
+    commands_buffer: usize,
+    events_buffer: usize,
     heartbeat_secs: u8,
+    virtio: PathBuf,
 }
 
 impl Default for OgaBuilder {
     fn default() -> Self {
         Self {
+            commands_buffer: 10,
+            events_buffer: 10,
             virtio: PathBuf::from(DEFAULT_BARE_VIRTIO_PATH),
             heartbeat_secs: 5,
         }
@@ -70,7 +75,8 @@ impl OgaBuilder {
         Self::default()
     }
 
-    pub async fn handshake(self) -> Result<OgaClient, OgaError> {
+    /// Connect, initialize, and return a client.
+    pub async fn connect(self) -> Result<OgaClient, OgaError> {
         let mut uds = UnixStream::connect(&self.virtio)
             .await
             .map_err(|_| format!("failed to connect to '{}'", self.virtio.display()))?;
@@ -89,7 +95,7 @@ impl OgaBuilder {
 pub struct OgaClient {
     termination: Option<oneshot::Receiver<OgaError>>,
     abortable_tasks: Vec<AbortHandle>,
-    from_app: mpsc::Sender<Box<dyn commands::AsFrame>>,
+    from_app: mpsc::Sender<FramePlusChan>,
     to_app: broadcast::Sender<crate::events::Event>,
 }
 
@@ -111,11 +117,11 @@ impl OgaClient {
 
         // Channels.
         let termination_chan = oneshot::channel();
-        let from_app_chan = mpsc::channel(128);
-        let to_manager_chan = mpsc::channel(128);
-        let from_manager_chan = mpsc::channel(128);
+        let from_app_chan = mpsc::channel(builder.commands_buffer);
+        let to_manager_chan = mpsc::channel(builder.commands_buffer);
+        let from_manager_chan = mpsc::channel(builder.events_buffer);
         let to_app_chan = {
-            let bcast = broadcast::channel(128);
+            let bcast = broadcast::channel(builder.events_buffer);
             drop(bcast.1);
             bcast.0
         };
@@ -183,8 +189,9 @@ impl OgaClient {
     }
 
     /// Return a channel (write-half) for sending guest commands.
-    pub fn command_chan(&mut self) -> mpsc::Sender<Box<dyn commands::AsFrame>> {
-        self.from_app.clone()
+    pub fn command_chan(&mut self) -> OgaCommandSender {
+        let from_app = self.from_app.clone();
+        OgaCommandSender { from_app }
     }
 
     /// Return a channel (read-half) for receiving events from the host.
@@ -207,5 +214,26 @@ impl Drop for OgaClient {
         for task in &self.abortable_tasks {
             task.abort()
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+/// Channel for sending commands to the host.
+pub struct OgaCommandSender {
+    from_app: mpsc::Sender<FramePlusChan>,
+}
+
+impl OgaCommandSender {
+    /// Send a command to the host.
+    pub async fn send(&mut self, cmd: Box<dyn commands::AsFrame>) -> Result<(), OgaError> {
+        let err_chan = oneshot::channel();
+        self.from_app
+            .send((cmd, err_chan.0))
+            .await
+            .map_err(|e| OgaError::from(e.to_string()))?;
+        err_chan
+            .1
+            .await
+            .map_err(|e| OgaError::from(e.to_string()))?
     }
 }

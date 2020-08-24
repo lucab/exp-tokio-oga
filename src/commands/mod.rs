@@ -3,27 +3,30 @@
 use crate::errors::OgaError;
 use serde::Serialize;
 
+/// Supported protocol/API version.
 const API_VERSION: u8 = 3;
-const MEM_USAGE: u64 = 0;
 
 /// Encode command as frame.
 pub trait AsFrame: std::fmt::Debug + Send {
     fn as_frame(&self) -> Result<Vec<u8>, OgaError>;
 }
 
+/// Heartbeat.
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "__name__")]
 #[serde(rename(serialize = "heartbeat"))]
 pub struct Heartbeat {
+    #[serde(rename = "apiVersion")]
     api_version: u8,
-    pub mem_usage: u64,
+    #[serde(rename = "free-ram")]
+    pub free_ram: u64,
 }
 
 impl Default for Heartbeat {
     fn default() -> Self {
         Self {
             api_version: API_VERSION,
-            mem_usage: MEM_USAGE,
+            free_ram: 0,
         }
     }
 }
@@ -38,7 +41,7 @@ impl AsFrame for Heartbeat {
 }
 
 /// Guest system is started or restarted.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 #[serde(tag = "__name__")]
 #[serde(rename(serialize = "session-startup"))]
 pub struct SessionStartup {}
@@ -53,7 +56,7 @@ impl AsFrame for SessionStartup {
 }
 
 /// Guest system shuts down.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 #[serde(tag = "__name__")]
 #[serde(rename(serialize = "session-shutdown"))]
 pub struct SessionShutdown {}
@@ -68,9 +71,9 @@ impl AsFrame for SessionShutdown {
 }
 
 /// Guest agent was uninstalled.
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 #[serde(tag = "__name__")]
-#[serde(rename(serialize = "session-shutdown"))]
+#[serde(rename(serialize = "uninstalled"))]
 pub struct Uninstalled {}
 
 impl AsFrame for Uninstalled {
