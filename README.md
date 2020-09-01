@@ -9,7 +9,7 @@ service like [VDSM](https://www.ovirt.org/develop/developer-guide/vdsm/vdsm.html
 It supports receiving [events](./events/index.html) from the host and sending
 [commands](./commands/index.html) to it.
 
-An end-to-end usage example is available under [`examples/`](examples).
+End-to-end usage examples are available under [`examples/`](examples).
 
 References:
 

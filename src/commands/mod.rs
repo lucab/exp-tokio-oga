@@ -84,3 +84,28 @@ impl AsFrame for Uninstalled {
         Ok(msg)
     }
 }
+
+/// Active user.
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "__name__")]
+#[serde(rename(serialize = "active-user"))]
+pub struct ActiveUser {
+    pub name: String,
+}
+
+impl AsFrame for ActiveUser {
+    fn as_frame(&self) -> Result<Vec<u8>, OgaError> {
+        let mut msg =
+            serde_json::to_vec(self).map_err(|e| format!("failed to encode frame: {}", e))?;
+        msg.push(b'\n');
+        Ok(msg)
+    }
+}
+
+impl Default for ActiveUser {
+    fn default() -> Self {
+        Self {
+            name: "None".to_string(),
+        }
+    }
+}

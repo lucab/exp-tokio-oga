@@ -11,6 +11,10 @@ type ExError = Box<dyn std::error::Error + 'static>;
 const SHUTDOWN_DELAY_SECS: u8 = 10;
 
 fn main() -> Result<(), ExError> {
+    env_logger::Builder::from_default_env()
+        .filter(Some("tokio_oga"), log::LevelFilter::Trace)
+        .init();
+
     let mut rt = runtime::Runtime::new().expect("tokio runtime failure");
     rt.block_on(run())
 }

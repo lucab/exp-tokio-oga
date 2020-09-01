@@ -30,31 +30,31 @@ pub mod commands;
 mod errors;
 pub mod events;
 mod tasks;
+mod virtio;
 
 use crate::commands::AsFrame;
 pub use crate::errors::OgaError;
-use futures::future::AbortHandle;
-use futures::future::TryFutureExt;
-use std::path::PathBuf;
-use tokio::io::AsyncWriteExt;
-use tokio::net::UnixStream;
+use crate::virtio::VirtioPort;
+use futures::future::{AbortHandle, TryFutureExt};
+use std::path::{Path, PathBuf};
+use tokio::io::{AsyncWriteExt, PollEvented};
 use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::time::{self, Duration};
 
 /// Tuple with pending frame and channel for the result.
 type FramePlusChan = (Box<dyn AsFrame>, oneshot::Sender<Result<(), OgaError>>);
 
-/// Default path to the Unix Domain Socket (without udev symlinking).
-pub static DEFAULT_BARE_VIRTIO_PATH: &str = "/dev/virtio-ports/ovirt-guest-agent.0";
-
-/// Default path to the Unix Domain Socket (with udev symlinking).
-pub static DEFAULT_UDEV_VIRTIO_PATH: &str = "/dev/virtio-ports/com.redhat.rhevm.vdsm";
+/// Default path to the VirtIO device.
+pub static DEFAULT_VIRTIO_PATH: &str = "/dev/virtio-ports/ovirt-guest-agent.0";
 
 /// Configuration and builder for `OgaClient`.
 #[derive(Clone, Debug)]
 pub struct OgaBuilder {
     commands_buffer: usize,
+    connect_timeout: u8,
     events_buffer: usize,
     heartbeat_secs: u8,
+    initial_heartbeat: bool,
     virtio: PathBuf,
 }
 
@@ -62,9 +62,11 @@ impl Default for OgaBuilder {
     fn default() -> Self {
         Self {
             commands_buffer: 10,
+            connect_timeout: 5,
             events_buffer: 10,
-            virtio: PathBuf::from(DEFAULT_BARE_VIRTIO_PATH),
             heartbeat_secs: 5,
+            initial_heartbeat: true,
+            virtio: PathBuf::from(DEFAULT_VIRTIO_PATH),
         }
     }
 }
@@ -75,18 +77,51 @@ impl OgaBuilder {
         Self::default()
     }
 
+    /// Whether to send an heartbeat on connect (default: true).
+    pub fn initial_heartbeat(mut self, arg: Option<bool>) -> Self {
+        let setting = arg.unwrap_or(true);
+        self.initial_heartbeat = setting;
+        self
+    }
+
+    /// Seconds between heartbeats, or 0 to disable (default: 5).
+    pub fn heartbeat_interval(mut self, arg: Option<u8>) -> Self {
+        let setting = arg.unwrap_or(5);
+        self.heartbeat_secs = setting;
+        self
+    }
+
+    /// Path to the VirtIO serial port (default: `DEFAULT_VIRTIO_PATH`).
+    pub fn device_path(mut self, arg: Option<impl AsRef<Path>>) -> Self {
+        let setting = match arg {
+            Some(p) => p.as_ref().to_path_buf(),
+            None => PathBuf::from(DEFAULT_VIRTIO_PATH),
+        };
+        self.virtio = setting;
+        self
+    }
+
     /// Connect, initialize, and return a client.
     pub async fn connect(self) -> Result<OgaClient, OgaError> {
-        let mut uds = UnixStream::connect(&self.virtio)
-            .await
-            .map_err(|_| format!("failed to connect to '{}'", self.virtio.display()))?;
-        let frame = commands::Heartbeat::default().as_frame()?;
-        uds.write_all(&frame)
-            .await
-            .map_err(|_| "failed to send heartbeat")?;
+        let mut dev = VirtioPort::open(&self.virtio)?.evented()?;
+        log::debug!("virtio port found at '{}'", &self.virtio.display());
 
-        let client = OgaClient::initialize(self, uds).await;
+        if self.initial_heartbeat {
+            let conn_timeout = Duration::from_secs(u64::from(self.connect_timeout));
+            time::timeout(conn_timeout, Self::send_heartbeat(&mut dev))
+                .await
+                .map_err(|e| format!("failed to send initial heartbeat: {}", e))??;
+            log::trace!("initial heartbeat sent");
+        }
+
+        let client = OgaClient::initialize(self, dev).await;
         Ok(client)
+    }
+
+    async fn send_heartbeat(dev: &mut PollEvented<VirtioPort>) -> Result<(), errors::OgaError> {
+        let frame = commands::Heartbeat::default().as_frame()?;
+        dev.write_all(&frame).await.map_err(|e| e.to_string())?;
+        dev.flush().await.map_err(|e| e.to_string().into())
     }
 }
 
@@ -112,7 +147,7 @@ impl OgaClient {
     ///  * Manager    - socket manager towards the hypervisor service.
     ///  * Dispatcher - channel handler towards library consumers.
     ///  * Runner     - top-level umbrella and client engine.
-    async fn initialize(builder: OgaBuilder, conn: UnixStream) -> Self {
+    async fn initialize(builder: OgaBuilder, dev: PollEvented<VirtioPort>) -> Self {
         let (runner_abort, runner_reg) = futures::future::AbortHandle::new_pair();
 
         // Channels.
@@ -133,7 +168,7 @@ impl OgaClient {
             to_manager_chan.0.clone(),
         );
         let (manager, manager_abort) =
-            tasks::ManagerTask::new(conn, to_manager_chan.1, from_manager_chan.0);
+            tasks::ManagerTask::new(dev, to_manager_chan.1, from_manager_chan.0);
         let (pacemaker, pacemaker_abort) =
             tasks::PacemakerTask::new(to_manager_chan.0, builder.heartbeat_secs);
 

@@ -14,12 +14,12 @@ pub enum Event {
     ApiVersion(ApiVersion),
     Echo(Echo),
     Hibernate(Hibernate),
-    Lifecycle(LifecycleEvent),
-    Lock(LockScreen),
+    LifecycleEvent(LifecycleEvent),
+    LockScreen(LockScreen),
     Login(Login),
-    Logoff(LogOff),
+    LogOff(LogOff),
     Refresh(Refresh),
-    SetCpus(SetNumberOfCpus),
+    SetNumberOfCpus(SetNumberOfCpus),
     Shutdown(Shutdown),
 }
 
@@ -27,6 +27,25 @@ impl Event {
     /// Try to parse an event from a protocol frame.
     pub fn parse_frame(data: &[u8]) -> Result<Self, OgaError> {
         serde_json::from_slice(data).map_err(|e| OgaError::from(e.to_string()))
+    }
+}
+
+impl std::fmt::Display for Event {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let kind = match self {
+            Event::ApiVersion(_) => "ApiVersion",
+            Event::Echo(_) => "Echo",
+            Event::Hibernate(_) => "Hibernate",
+            Event::LifecycleEvent(_) => "LifecycleEvent",
+            Event::LockScreen(_) => "LockScreen",
+            Event::Login(_) => "Login",
+            Event::LogOff(_) => "LogOff",
+            Event::Refresh(_) => "Refresh",
+            Event::SetNumberOfCpus(_) => "SetNumberOfCpus",
+            Event::Shutdown(_) => "Shutdown",
+        };
+
+        write!(f, "{}", kind)
     }
 }
 

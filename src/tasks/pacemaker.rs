@@ -1,6 +1,6 @@
 use crate::commands;
 use crate::{FramePlusChan, OgaError};
-use futures::future::{AbortHandle, AbortRegistration, Abortable};
+use futures::future::{self, AbortHandle, AbortRegistration, Abortable};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time;
 
@@ -44,6 +44,11 @@ impl PacemakerTask {
         pause: u8,
     ) -> Result<(), OgaError> {
         let pause = u64::from(pause);
+        if pause == 0 {
+            let _: Result<(), OgaError> = future::pending().await;
+            return Ok(());
+        }
+
         let beat = commands::Heartbeat::default();
 
         loop {
